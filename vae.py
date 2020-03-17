@@ -84,7 +84,7 @@ def sample_decoder(decoder,
     if len(categorical_columns) >= 3:
         df2 = df.groupby(list(df.columns)).size().reset_index(name="Frequency")
         cols = list(df2.columns)
-        (ggplot(df2, aes(x = cols[1], y = "np.log(Frequency + 1)", color = cols[2])) + geom_point() + geom_line() + facet_grid(f"{cols[0]} ~ {cols[2]}")).save("vae_icees_samples_plot.png")
+        (ggplot(df2, aes(x = cols[1], y = "np.log(Frequency + 1)", color = cols[2])) + geom_point() + geom_line() + facet_grid(f"{cols[0]} ~ {cols[2]}")).save(f"{model_name}_samples_plot.png")
     
 
 
@@ -103,7 +103,6 @@ def get_data():
 def get_model(original_dim, scale_width, latent_dim, loss_function="xent"):
     # network parameters
     input_shape = (original_dim, )
-    intermediate_dim = 512
 
     # VAE model = encoder + decoder
     # build encoder model
@@ -125,7 +124,7 @@ def get_model(original_dim, scale_width, latent_dim, loss_function="xent"):
     # instantiate encoder model
     encoder = Model(inputs, [z_mean, z_log_var, z], name='encoder')
     encoder.summary()
-    plot_model(encoder, to_file='vae_mlp_encoder.png', show_shapes=True)
+    plot_model(encoder, to_file=f'{model_name}_encoder.png', show_shapes=True)
 
     # build decoder model
     latent_inputs = Input(shape=(latent_dim,), name='z_sampling')
@@ -137,7 +136,7 @@ def get_model(original_dim, scale_width, latent_dim, loss_function="xent"):
     # instantiate decoder model
     decoder = Model(latent_inputs, outputs, name='decoder')
     decoder.summary()
-    plot_model(decoder, to_file='vae_mlp_decoder.png', show_shapes=True)
+    plot_model(decoder, to_file=f'{model_name}_decoder.png', show_shapes=True)
 
     # instantiate VAE model
     outputs = decoder(encoder(inputs)[2])
@@ -222,7 +221,7 @@ if __name__ == '__main__':
 
     vae.summary()
     plot_model(vae,
-               to_file='{model_name}.png',
+               to_file=f'{model_name}.png',
                show_shapes=True)
 
 
