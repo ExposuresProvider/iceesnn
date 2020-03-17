@@ -4,6 +4,7 @@ from keras.datasets import mnist
 from keras.losses import mse, binary_crossentropy
 from keras.utils import plot_model
 from keras import backend as K
+from keras.callbacks.callbacks import EarlyStopping
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -197,6 +198,18 @@ if __name__ == '__main__':
                         help="prefix for file names",
                         type=str,
                         default="vae_icees")
+    parser.add_argument("--early_stopping",
+                        help="early stopping",
+                        default=False,
+                        action="store_true")
+    parser.add_argument("--patience",
+                        help="early stopping patience",
+                        type=int,
+                        default=50)
+    parser.add_argument("--min_delta",
+                        help="early stopping min delta",
+                        type=float,
+                        default=1)
     parser.add_argument("-n",
                         help="number of samples to generate",
                         type=int,
@@ -228,11 +241,18 @@ if __name__ == '__main__':
     if args.weights:
         vae.load_weights(args.weights)
     else:
+        if args.early_stopping:
+            es = EarlyStopping(monitor="val_loss", mode="min", verbose=1, patience=args.patience, min_delta=args.min_delta)
+            cb = [es]
+        else:
+            cb = []
+            
         # train the autoencoder
         vae.fit(x_train,
                 epochs=args.epochs,
                 batch_size=args.batch_size,
-                validation_data=(x_test, None))
+                validation_data=(x_test, None),
+                callbacks=cb)
         vae.save_weights(f'{model_name}.h5')
 
     sample_decoder(decoder,
