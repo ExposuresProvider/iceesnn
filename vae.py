@@ -9,6 +9,19 @@ import numpy as np
 import matplotlib.pyplot as plt
 import argparse
 import os
+import yaml
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from collections import defaultdict
+from plotnine import *
+import itertools
+
+def load_data(input_file, columns):
+    df0 = pd.read_csv(input_file)
+    cols = columns if columns is not None else df0.columns
+    df = df0[cols]
+    onehotencodeddf = pd.get_dummies(df, columns=cols)
+    return onehotencodeddf
 
 
 # reparameterization trick
@@ -32,66 +45,48 @@ def sampling(args):
     return z_mean + K.exp(0.5 * z_log_var) * epsilon
 
 
-def plot_results(models,
-                 data,
-                 batch_size=128,
-                 model_name="vae_mnist"):
-    """Plots labels and MNIST digits as a function of the 2D latent vector
+def from_dummies(data, categorical_cols, prefix_sep='_'):
+    out = data.copy()
 
-    # Arguments
-        models (tuple): encoder and decoder models
-        data (tuple): test data and label
-        batch_size (int): prediction batch size
-        model_name (string): which model is using this function
-    """
+    for col_parent in categorical_cols:
+        
+        filter_col = [col for col in data if col.startswith(col_parent + prefix_sep)]
+        cols_with_ones = np.argmax(data[filter_col].values, axis=1)
+        cols = data[filter_col].columns
+        org_col_values = []
+        for row, col in enumerate(cols_with_ones):
+            org_col_values.append(cols[col][len(col_parent+prefix_sep):])
+                    
+        out[col_parent] = pd.Series(org_col_values).values
+        out.drop(filter_col, axis=1, inplace=True)    
+        
+    return out
 
-    encoder, decoder = models
-    x_test, y_test = data
-    os.makedirs(model_name, exist_ok=True)
 
-    filename = os.path.join(model_name, "vae_mean.png")
-    # display a 2D plot of the digit classes in the latent space
-    z_mean, _, _ = encoder.predict(x_test,
-                                   batch_size=batch_size)
-    plt.figure(figsize=(12, 10))
-    plt.scatter(z_mean[:, 0], z_mean[:, 1], c=y_test)
-    plt.colorbar()
-    plt.xlabel("z[0]")
-    plt.ylabel("z[1]")
-    plt.savefig(filename)
-    plt.show()
-
-    filename = os.path.join(model_name, "digits_over_latent.png")
-    # display a 30x30 2D manifold of digits
-    n = 30
-    digit_size = 28
-    figure = np.zeros((digit_size * n, digit_size * n))
-    # linearly spaced coordinates corresponding to the 2D plot
-    # of digit classes in the latent space
+def sample_decoder(decoder,
+                   data,
+                   one_hot_columns,
+                   categorical_columns,
+                   model_name,
+                   latent_dim,
+                   n=30):
     grid_x = np.linspace(-4, 4, n)
-    grid_y = np.linspace(-4, 4, n)[::-1]
 
-    for i, yi in enumerate(grid_y):
-        for j, xi in enumerate(grid_x):
-            z_sample = np.array([[xi, yi]])
-            x_decoded = decoder.predict(z_sample)
-            digit = x_decoded[0].reshape(digit_size, digit_size)
-            figure[i * digit_size: (i + 1) * digit_size,
-                   j * digit_size: (j + 1) * digit_size] = digit
+    z_sample = np.array([list(element) for element in itertools.product(*([grid_x] * latent_dim))])
+    x_decoded = decoder.predict(z_sample)
+    df0 = pd.DataFrame(data=x_decoded, columns=one_hot_columns)
 
-    plt.figure(figsize=(10, 10))
-    start_range = digit_size // 2
-    end_range = (n - 1) * digit_size + start_range + 1
-    pixel_range = np.arange(start_range, end_range, digit_size)
-    sample_range_x = np.round(grid_x, 1)
-    sample_range_y = np.round(grid_y, 1)
-    plt.xticks(pixel_range, sample_range_x)
-    plt.yticks(pixel_range, sample_range_y)
-    plt.xlabel("z[0]")
-    plt.ylabel("z[1]")
-    plt.imshow(figure, cmap='Greys_r')
-    plt.savefig(filename)
-    plt.show()
+    df = from_dummies(df0, categorical_columns)
+    print(df)
+    filename = f"{model_name}_samples.csv"
+    df.to_csv(filename, index=False)
+
+    if len(categorical_columns) >= 3:
+        df2 = df.groupby(list(df.columns)).size().reset_index(name="Frequency")
+        cols = list(df2.columns)
+        (ggplot(df2, aes(x = cols[1], y = "np.log(Frequency + 1)", color = cols[2])) + geom_point() + geom_line() + facet_grid(f"{cols[0]} ~ {cols[2]}")).save("vae_icees_samples_plot.png")
+    
+
 
 
 # MNIST dataset
@@ -105,7 +100,7 @@ def get_data():
     x_test = x_test.astype('float32') / 255
     return (x_train, y_train), (x_test, y_test)
 
-def get_model(original_dim, latent_dim, loss_function="xent"):
+def get_model(original_dim, scale_width, latent_dim, loss_function="xent"):
     # network parameters
     input_shape = (original_dim, )
     intermediate_dim = 512
@@ -113,7 +108,13 @@ def get_model(original_dim, latent_dim, loss_function="xent"):
     # VAE model = encoder + decoder
     # build encoder model
     inputs = Input(shape=input_shape, name='encoder_input')
-    x = Dense(intermediate_dim, activation='relu')(inputs)
+    x = inputs
+    intermediate_dim = original_dim * scale_width // 2 
+    dims = []
+    while intermediate_dim >= latent_dim * 2:
+        x = Dense(intermediate_dim, activation='relu')(x)
+        dims.append(intermediate_dim)
+        intermediate_dim //= 2
     z_mean = Dense(latent_dim, name='z_mean')(x)
     z_log_var = Dense(latent_dim, name='z_log_var')(x)
 
@@ -128,7 +129,9 @@ def get_model(original_dim, latent_dim, loss_function="xent"):
 
     # build decoder model
     latent_inputs = Input(shape=(latent_dim,), name='z_sampling')
-    x = Dense(intermediate_dim, activation='relu')(latent_inputs)
+    x = latent_inputs
+    for intermediate_dim in reversed(dims):
+        x = Dense(intermediate_dim, activation='relu')(x)
     outputs = Dense(original_dim, activation='sigmoid')(x)
 
     # instantiate decoder model
@@ -163,6 +166,14 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("-w", "--weights",
                         help="Load h5 model trained weights")
+    parser.add_argument("--input_file",
+                        help="Load h5 model trained weights",
+                        type=str,
+                        required=True)
+    parser.add_argument("--columns",
+                        help="Load h5 model trained weights",
+                        type=str,
+                        nargs="+")
     parser.add_argument("--loss_function",
                         help="loss function: mse | xent",
                         type=str,
@@ -179,16 +190,39 @@ if __name__ == '__main__':
                         help="batch size",
                         type=int,
                         default=128)
+    parser.add_argument("--width_scale",
+                        help="width scale",
+                        type=int,
+                        default=2)
+    parser.add_argument("--model_name",
+                        help="prefix for file names",
+                        type=str,
+                        default="vae_icees")
+    parser.add_argument("-n",
+                        help="number of samples to generate",
+                        type=int,
+                        default=128)
     args = parser.parse_args()
-    (x_train, y_train), (x_test, y_test) = get_data()
-    original_dim = x_train.shape[1]
-    data = (x_test, y_test)
 
-    vae, encoder, decoder = get_model(original_dim, args.latent_dim, args.loss_function)
+    input_file = args.input_file
+    columns = args.columns
+    model_name = args.model_name
+
+    df = load_data(input_file, columns)
+    print(df)
+    print(df.columns)
+    data = df.values
+
+    x_train, x_test = train_test_split(data)
+    
+    original_dim = x_train.shape[1]
+    latent_dim = args.latent_dim
+
+    vae, encoder, decoder = get_model(original_dim, args.width_scale, latent_dim, args.loss_function)
 
     vae.summary()
     plot_model(vae,
-               to_file='vae_mlp.png',
+               to_file='{model_name}.png',
                show_shapes=True)
 
 
@@ -200,10 +234,12 @@ if __name__ == '__main__':
                 epochs=args.epochs,
                 batch_size=args.batch_size,
                 validation_data=(x_test, None))
-        vae.save_weights('vae_mlp_mnist.h5')
+        vae.save_weights(f'{model_name}.h5')
 
-    models = (encoder, decoder)
-    plot_results(models,
-                 data,
-                 batch_size=args.batch_size,
-                 model_name="vae_mlp")
+    sample_decoder(decoder,
+                   data,
+                   one_hot_columns = df.columns,
+                   categorical_columns = columns,
+                   latent_dim = latent_dim,
+                   model_name=model_name,
+                   n=args.n)
